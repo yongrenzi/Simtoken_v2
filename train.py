@@ -215,6 +215,13 @@ def collate_fn(batch, tokenizer=None):
 
 import torch.multiprocessing as mp
 if __name__ == "__main__":
+    # # 5678 是监听端口，可以随意改，但要和 launch.json 对应
+    debugpy.listen(("localhost", 1234))
+    print("等待调试器连接...")
+    debugpy.wait_for_client()  # 程序会暂停在这里，直到你按下 F5
+
+    # 下面是你原本的代码
+    print("调试器已连接，开始执行！")
     mp.set_start_method("spawn")
     set_seed(42)
     tokenizer = transformers.AutoTokenizer.from_pretrained(

@@ -277,8 +277,13 @@ class Simtoken_ForCausalLM(ChatUniViLlamaForCausalLM):
         batch_size = len(images)
         image_embeddings = torch.cat(image_features, dim=0)
         # image_embeddings = self.get_visual_embs(torch.cat(images, dim=0)) # [BT, 256, 64, 64]
-
-        audio_embeddings = self.audio_feature_layer(torch.stack(audio_features, dim=0))  # [B, 10, 4096]
+        # 核心逻辑：如果是 20 帧就重塑为 [10, 2, 128] 取平均，否则保持原样
+        processed_audio = [
+            f.view(10, 2, -1).mean(dim=1) if f.shape[0] == 20 else f 
+            for f in audio_features
+        ]
+        audio_embeddings = self.audio_feature_layer(torch.stack(processed_audio, dim=0))
+        # audio_embeddings = self.audio_feature_layer(torch.stack(audio_features, dim=0))  # [B, 10, 4096]
         # audio_embeddings = torch.cat(audio_features, dim=0) # [B*10, 128]
         # audio_embeddings = audio_features  # [B, 10, 128]
 
