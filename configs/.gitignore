@@ -1,0 +1,6 @@
+Chat-UniVi-7B-v1.5/*
+result_ckpt/*
+checkpoints/*
+log/*
+*.pyc
+__pycache__/
