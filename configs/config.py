@@ -63,7 +63,7 @@ parser.add_argument("--visualization_root",type=str,default='visualization', hel
 parser.add_argument("--lr", type=float, default=5e-5, help='lr to fine tuning adapters.')
 # epochs
 parser.add_argument("--epochs", type=int, default=1, help='epochs to fine tuning adapters.')
-parser.add_argument("--batch_size", type=int, default=8)
+parser.add_argument("--batch_size", type=int, default=4)
 
 
 parser.add_argument("--gpu_id", type=str, default="0", help="The GPU device to run generation on.")
