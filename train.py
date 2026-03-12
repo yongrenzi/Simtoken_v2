@@ -1,3 +1,5 @@
+import os
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 import transformers
 from datasets import REFAVS
 from configs import args
@@ -6,9 +8,7 @@ from functools import partial
 from models.llava import conversation as conversation_lib
 # from  models.avs_model import VISAForCausalLM
 from  models.avs_model import Simtoken_ForCausalLM
-import os
 import debugpy
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 import torch
 from transformers import AutoConfig
 from peft import LoraConfig, get_peft_model
@@ -218,12 +218,12 @@ def collate_fn(batch, tokenizer=None):
 import torch.multiprocessing as mp
 if __name__ == "__main__":
     # # 5678 是监听端口，可以随意改，但要和 launch.json 对应
-    debugpy.listen(("localhost", 1234))
-    print("等待调试器连接...")
-    debugpy.wait_for_client()  # 程序会暂停在这里，直到你按下 F5
+    # debugpy.listen(("localhost", 1234))
+    # print("等待调试器连接...")
+    # debugpy.wait_for_client()  # 程序会暂停在这里，直到你按下 F5
 
-    # 下面是你原本的代码
-    print("调试器已连接，开始执行！")
+    # # 下面是你原本的代码
+    # print("调试器已连接，开始执行！")
     mp.set_start_method("spawn")
     set_seed(42)
     tokenizer = transformers.AutoTokenizer.from_pretrained(
@@ -378,6 +378,87 @@ if __name__ == "__main__":
 
     print("will save train model")
 
+    # ===== Helper Functions for Checkpoint Management =====
+    def save_checkpoint(epoch, model, optimizer, scheduler, save_path):
+        """Save complete checkpoint including model, optimizer, and scheduler states"""
+        # 1. Save LoRA adapters
+        lora_path = f"{save_path}_epoch{epoch}_lora"
+        model.save_pretrained(lora_path)
+
+        # 2. Save non-LoRA trainable parameters
+        trainable_param_names = {n for n, p in model.named_parameters() if p.requires_grad}
+        non_lora_trainable = {
+            k: v for k, v in model.state_dict().items()
+            if k in trainable_param_names and 'lora' not in k.lower()
+        }
+
+        # 3. Save complete checkpoint with training state
+        checkpoint = {
+            'epoch': epoch,
+            'non_lora_state_dict': non_lora_trainable,
+            'optimizer_state_dict': optimizer.state_dict(),
+            'scheduler_state_dict': scheduler.state_dict(),
+        }
+
+        checkpoint_path = f"{save_path}_epoch{epoch}_checkpoint.pth"
+        torch.save(checkpoint, checkpoint_path)
+
+        print(f"Checkpoint saved: epoch {epoch}")
+        print(f"  - LoRA: {lora_path}")
+        print(f"  - Checkpoint: {checkpoint_path}")
+        return lora_path, checkpoint_path
+
+    def load_checkpoint(model, optimizer, scheduler, resume_from):
+        """Load checkpoint and resume training state"""
+        import glob
+
+        # Find the latest checkpoint if resume_from is a directory
+        if os.path.isdir(resume_from):
+            checkpoint_files = glob.glob(os.path.join(resume_from, "*_checkpoint.pth"))
+            if not checkpoint_files:
+                print(f"No checkpoint found in {resume_from}")
+                return 0
+            checkpoint_path = max(checkpoint_files, key=os.path.getctime)
+        else:
+            checkpoint_path = resume_from
+
+        if not os.path.exists(checkpoint_path):
+            print(f"Checkpoint not found: {checkpoint_path}")
+            return 0
+
+        print(f"Loading checkpoint from: {checkpoint_path}")
+        checkpoint = torch.load(checkpoint_path, map_location='cpu')
+
+        # Extract epoch number from checkpoint
+        start_epoch = checkpoint['epoch'] + 1
+
+        # Load non-LoRA parameters
+        model.load_state_dict(checkpoint['non_lora_state_dict'], strict=False)
+        print(f"Loaded non-LoRA parameters")
+
+        # Load LoRA adapters
+        # Extract base path and epoch from checkpoint path
+        base_path = checkpoint_path.replace('_checkpoint.pth', '')
+        lora_path = f"{base_path}_lora"
+
+        if os.path.exists(lora_path):
+            adapter_model_path = os.path.join(lora_path, "adapter_model.bin")
+            if os.path.exists(adapter_model_path):
+                lora_state = torch.load(adapter_model_path, map_location='cpu')
+                model.load_state_dict(lora_state, strict=False)
+                print(f"Loaded LoRA adapters from {lora_path}")
+
+        # Load optimizer state
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        print(f"Loaded optimizer state")
+
+        # Load scheduler state
+        scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        print(f"Loaded scheduler state")
+
+        print(f"Resuming from epoch {start_epoch}")
+        return start_epoch
+
     def valuate(model, dataloader, args, name):
         model.eval()
 
@@ -441,8 +522,23 @@ if __name__ == "__main__":
         num_training_steps=total_steps,
     )
 
+    # ===== Load checkpoint if resuming =====
+    start_epoch = 0
+    if args.resume:
+        if args.resume_from:
+            start_epoch = load_checkpoint(model, optimizer, scheduler, args.resume_from)
+        else:
+            # Try to load from default checkpoint location
+            default_checkpoint = os.path.join(args.checkpoint_root, args.name)
+            if os.path.exists(args.checkpoint_root):
+                start_epoch = load_checkpoint(model, optimizer, scheduler, default_checkpoint)
 
-    for epoch in range(epochs):
+        if start_epoch > 0:
+            print(f"Successfully resumed from epoch {start_epoch}")
+        else:
+            print("No checkpoint found, starting from scratch")
+
+    for epoch in range(start_epoch, epochs):
 
         model.train()
         optimizer.zero_grad()
@@ -490,9 +586,36 @@ if __name__ == "__main__":
         with open(os.path.join(args.log_root, f'{args.name}.txt'), "a") as f:
             f.write(f"Epoch {epoch}: running_loss {running_loss / len(train_dataloader) * gradient_accumulation_steps}  Learning Rate:{scheduler.get_last_lr()[0]:.6f}\n")
 
+        # ===== Save checkpoint after each epoch =====
+        checkpoint_base_path = os.path.join(args.checkpoint_root, args.name)
+        save_checkpoint(epoch, model, optimizer, scheduler, checkpoint_base_path)
 
-    torch.save(model.state_dict(), os.path.join(args.checkpoint_root, f"{args.name}.pth"))
-    print(f"trained model saved as {args.name}.pth")
+
+    # ===== Save Final Model: LoRA + Other Trainable Parameters =====
+    print("\n" + "="*50)
+    print("Training completed! Saving final model...")
+    print("="*50)
+
+    # 1. Save LoRA adapters
+    lora_save_path = os.path.join(args.checkpoint_root, f"{args.name}_final_lora")
+    model.save_pretrained(lora_save_path)
+    print(f"Final LoRA adapters saved to {lora_save_path}")
+
+    # 2. Save other trainable parameters (non-LoRA)
+    # Collect all trainable parameter names
+    trainable_param_names = {n for n, p in model.named_parameters() if p.requires_grad}
+
+    # Filter out LoRA parameters (they contain 'lora' in their names)
+    non_lora_trainable = {
+        k: v for k, v in model.state_dict().items()
+        if k in trainable_param_names and 'lora' not in k.lower()
+    }
+
+    non_lora_save_path = os.path.join(args.checkpoint_root, f"{args.name}_final_non_lora.pth")
+    torch.save(non_lora_trainable, non_lora_save_path)
+    print(f"Final non-LoRA trainable parameters saved to {non_lora_save_path}")
+    print(f"Total trainable modules saved: {len(non_lora_trainable)} parameters")
+    print("="*50 + "\n")
 
     # ---------------test on seen & unseen ------------------------------------------
     model.eval()

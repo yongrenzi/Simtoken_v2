@@ -219,17 +219,25 @@ class ChatUniViMetaForCausalLM(ABC):
         image_features = self.get_model().mm_projector(image_features)
         return image_features # 不同的type形状相同
 
+    # input_ids：torch.Size([4, 106])
+    # attention_mask: torch.Size([4, 106])
+    # past_key_values: None 
+    # labels: torch.Size([4, 106])
+    # len(images)=4 , images[0].shape: torch.Size([10, 3, 224, 224])
+    # audio_features: torch.Size([4, 10, 4096])
+    # target_frame: 5
+    # len(ref_ids): 4 ,ref_ids[0].shape: torch.Size([11])
     def prepare_inputs_labels_for_multimodal(
         self, input_ids, attention_mask, past_key_values, labels, images, audio_features=None, target_frame=0, ref_ids=None
     ):
         IMAGE_TOKEN_INDEX = -200
         AUDIO_TOKEN_INDEX = -300
         # print("\n调用prepare_inputs_labels_for_multimodal")
-        vision_tower = self.get_vision_tower()
+        vision_tower = self.get_vision_tower()  # CLIPVisionTower ，获取视觉编码器
         # print("获取vision_tower")
         num_frames = images[0].shape[0]  # T
 
-
+        # 当长度为 1 时，说明模型正处于逐字解码阶段（Decoding Phase）
         if vision_tower is None or images is None or input_ids.shape[1] == 1:
             if past_key_values is not None and vision_tower is not None and images is not None and input_ids.shape[1] == 1:
                 attention_mask = torch.ones((attention_mask.shape[0], past_key_values[-1][-1].shape[-2] + 1), dtype=attention_mask.dtype, device=attention_mask.device)

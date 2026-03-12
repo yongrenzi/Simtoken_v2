@@ -38,11 +38,16 @@ parser.add_argument("--mllm",type=str,default='/public/home/zm_students/code/lyj
 parser.add_argument("--conv_template",type=int,default=1)
 parser.add_argument("--ct_weight",type=float,default=0.1)
 parser.add_argument("--input_type",type=str,default='refer')
-parser.add_argument("--compress",action='store_false',default=True)
+# parser.add_argument("--compress",action='store_false',default=True) # simtoken1
+parser.add_argument("--compress",action='store_false',default=False)  # simtoken2
 parser.add_argument("--start",type=int,default=0)
 
+# Resume training from checkpoint
+parser.add_argument("--resume", action='store_true', default=False, help="Resume training from checkpoint")
+parser.add_argument("--resume_from", type=str, default=None, help="Path to checkpoint directory (without _lora/_non_lora suffix)")
 
-parser.add_argument("--name",type=str,default='testrun_1epoch')
+# parser.add_argument("--name",type=str,default='testrun_5epoch_modify2') # simtoken1
+parser.add_argument("--name",type=str,default='testrun_2epoch_modify2')   # simtoken2
 # path to ref-avs dataset
 parser.add_argument("--data_dir",type=str,default='/public/home/zm_students/code/lyj/REFAVS',help=f"The data paranet dir. File arch should be: {file_arch}")
 # path to pretrained checkpoints
@@ -62,7 +67,7 @@ parser.add_argument("--visualization_root",type=str,default='visualization', hel
 # learning rate
 parser.add_argument("--lr", type=float, default=5e-5, help='lr to fine tuning adapters.')
 # epochs
-parser.add_argument("--epochs", type=int, default=1, help='epochs to fine tuning adapters.')
+parser.add_argument("--epochs", type=int, default=5, help='epochs to fine tuning adapters.')
 parser.add_argument("--batch_size", type=int, default=4)
 
 

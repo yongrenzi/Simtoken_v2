@@ -65,39 +65,40 @@ def sigmoid_ce_loss(
 
 
 
-def compute_alignment_loss(q: torch.Tensor, pos_feats: list, neg_feats: list, temperature=0.07):
-    """
-    q: [B, D] embedding of the output SEG token
-    pos_feats: List[B][List[Tensor[D]]]   semantic embeddings of positive sets
-    """
-    B, D = q.shape
-    device = q.device
-    total_loss = 0.0
-    count = 0
+# ===== Contrastive Learning: Commented Out =====
+# def compute_alignment_loss(q: torch.Tensor, pos_feats: list, neg_feats: list, temperature=0.07):
+#     """
+#     q: [B, D] embedding of the output SEG token
+#     pos_feats: List[B][List[Tensor[D]]]   semantic embeddings of positive sets
+#     """
+#     B, D = q.shape
+#     device = q.device
+#     total_loss = 0.0
+#     count = 0
 
-    for i in range(B):
-        pos = pos_feats[i]
-        neg = neg_feats[i]
+#     for i in range(B):
+#         pos = pos_feats[i]
+#         neg = neg_feats[i]
 
-        if len(pos) == 0:
-            continue
+#         if len(pos) == 0:
+#             continue
 
-        # === Normalize ===
-        anchor = F.normalize(q[i].unsqueeze(0), dim=1)  # [1, D]
-        pos_tensors = torch.stack(pos).to(device)  # [P, D]
-        pos_tensors = F.normalize(pos_tensors, dim=1)    # [P, D]
+#         # === Normalize ===
+#         anchor = F.normalize(q[i].unsqueeze(0), dim=1)  # [1, D]
+#         pos_tensors = torch.stack(pos).to(device)  # [P, D]
+#         pos_tensors = F.normalize(pos_tensors, dim=1)    # [P, D]
 
-        # === Alignment ===
-        sim_pos = torch.matmul(anchor, pos_tensors.T) / temperature  # [1, P]
-        log_probs = F.log_softmax(sim_pos, dim=1)
-        loss = -log_probs.mean()
-        total_loss += loss
-        count += 1
+#         # === Alignment ===
+#         sim_pos = torch.matmul(anchor, pos_tensors.T) / temperature  # [1, P]
+#         log_probs = F.log_softmax(sim_pos, dim=1)
+#         loss = -log_probs.mean()
+#         total_loss += loss
+#         count += 1
 
-    if count == 0:
-        return torch.tensor(0.0, device=device, requires_grad=True)
+#     if count == 0:
+#         return torch.tensor(0.0, device=device, requires_grad=True)
 
-    return total_loss / count
+#     return total_loss / count
 
 
 
@@ -163,37 +164,38 @@ class Simtoken_Model(Simtoken_MetaModel, ChatUniViLlamaModel):
         self.config.mm_use_im_patch_token = False
 
 
-class SemanticMemoryBank:
-    def __init__(self, max_per_object=5):
-        self.bank = defaultdict(lambda: defaultdict(list))  # bank[vid][fid] = [feat1, feat2, ...]
-        self.max_per_object = max_per_object
+# ===== Contrastive Learning: SemanticMemoryBank Commented Out =====
+# class SemanticMemoryBank:
+#     def __init__(self, max_per_object=5):
+#         self.bank = defaultdict(lambda: defaultdict(list))  # bank[vid][fid] = [feat1, feat2, ...]
+#         self.max_per_object = max_per_object
 
-    def add(self, vid: str, fid: int, feat: torch.Tensor):
-        feat = feat.detach().cpu()
-        self.bank[vid][fid].append(feat)
-        if len(self.bank[vid][fid]) > self.max_per_object:
-            self.bank[vid][fid] = self.bank[vid][fid][-self.max_per_object:]  # 保留最新的 K 个
+#     def add(self, vid: str, fid: int, feat: torch.Tensor):
+#         feat = feat.detach().cpu()
+#         self.bank[vid][fid].append(feat)
+#         if len(self.bank[vid][fid]) > self.max_per_object:
+#             self.bank[vid][fid] = self.bank[vid][fid][-self.max_per_object:]  # 保留最新的 K 个
 
-    def add_batch(self, vids: list, fids: list, feats: torch.Tensor):
-        for vid, fid, feat in zip(vids, fids, feats):
-            self.add(vid, int(fid), feat)
+#     def add_batch(self, vids: list, fids: list, feats: torch.Tensor):
+#         for vid, fid, feat in zip(vids, fids, feats):
+#             self.add(vid, int(fid), feat)
 
-    def get_positive_features(self, vids: list, fids: list):
-        results = []
-        for vid, fid in zip(vids, fids):
-            pos = self.bank[vid][int(fid)].copy()  # List[Tensor]
-            results.append(pos)
-        return results
+#     def get_positive_features(self, vids: list, fids: list):
+#         results = []
+#         for vid, fid in zip(vids, fids):
+#             pos = self.bank[vid][int(fid)].copy()  # List[Tensor]
+#             results.append(pos)
+#         return results
 
-    def get_negative_features_same_vid(self, vids: list, fids: list):
-        results = []
-        for vid, fid in zip(vids, fids):
-            neg = []
-            for other_fid, feats in self.bank[vid].items():
-                if other_fid != int(fid):
-                    neg.extend(feats)
-            results.append(neg)
-        return results
+#     def get_negative_features_same_vid(self, vids: list, fids: list):
+#         results = []
+#         for vid, fid in zip(vids, fids):
+#             neg = []
+#             for other_fid, feats in self.bank[vid].items():
+#                 if other_fid != int(fid):
+#                     neg.extend(feats)
+#             results.append(neg)
+#         return results
 
 
 class Simtoken_ForCausalLM(ChatUniViLlamaForCausalLM):
@@ -229,7 +231,8 @@ class Simtoken_ForCausalLM(ChatUniViLlamaForCausalLM):
 
         self.audio_feature_layer = nn.Linear(in_features=128, out_features=4096)
 
-        self.memory = SemanticMemoryBank()
+        # ===== Contrastive Learning: Memory Bank Commented Out =====
+        # self.memory = SemanticMemoryBank()
 
         self.compress = kwargs.pop("compress", True)
 
@@ -325,20 +328,21 @@ class Simtoken_ForCausalLM(ChatUniViLlamaForCausalLM):
         # print("fids:", fids)
         fis_flat = [fid[0] for fid in fids]
         # print("fids:", fis_flat )
-        if not inference:
 
-            pos_feats = self.memory.get_positive_features(vids, fis_flat )
-            neg_feats = self.memory.get_negative_features_same_vid(vids, fis_flat )
+        # ===== Contrastive Learning: Loss Computation Commented Out =====
+        # if not inference:
+        #     pos_feats = self.memory.get_positive_features(vids, fis_flat )
+        #     neg_feats = self.memory.get_negative_features_same_vid(vids, fis_flat )
 
-            for i in range(len(neg_feats)):
-                for j in range(len(seg_embeddings)):
-                    if j != i:
-                        neg_feats[i].append(seg_embeddings[j].detach().cpu())
+        #     for i in range(len(neg_feats)):
+        #         for j in range(len(seg_embeddings)):
+        #             if j != i:
+        #                 neg_feats[i].append(seg_embeddings[j].detach().cpu())
 
-            ct_loss = compute_alignment_loss(seg_embeddings, pos_feats, neg_feats)
+        #     ct_loss = compute_alignment_loss(seg_embeddings, pos_feats, neg_feats)
 
-            # print("ct loss:", ct_loss)
-            self.memory.add_batch(vids, fis_flat, seg_embeddings)
+        #     # print("ct loss:", ct_loss)
+        #     self.memory.add_batch(vids, fis_flat, seg_embeddings)
 
 
         pred_embeddings = []
@@ -444,13 +448,16 @@ class Simtoken_ForCausalLM(ChatUniViLlamaForCausalLM):
 
 
 
-        ct_weight = contrast
+        # ===== Contrastive Learning: Loss Aggregation Commented Out =====
+        # ct_weight = contrast
+        # if epoch >= self.start:
+        #     loss = ce_loss + mask_loss + ct_weight * ct_loss
+        # else:
+        #     loss = ce_loss + mask_loss
 
-
-        if epoch >= self.start:
-            loss = ce_loss + mask_loss + ct_weight * ct_loss
-        else:
-            loss = ce_loss + mask_loss
+        # Without contrastive learning
+        loss = ce_loss + mask_loss
+        ct_loss = torch.tensor(0.0, device=loss.device)  # Placeholder for logging
 
         return {
             "loss": loss,

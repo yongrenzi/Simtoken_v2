@@ -337,8 +337,43 @@ if __name__ == "__main__":
     model = model.to("cuda")
     model.resize_token_embeddings(len(tokenizer))
 
-    model.load_state_dict(torch.load(args.saved_model), strict=False)
-    print("saved model loaded")
+    # ===== Load Model: Support both old and new format =====
+    import os
+
+    # Construct model paths using checkpoint_root and name
+    # Check if there's a saved_model argument for backward compatibility
+    if hasattr(args, 'saved_model') and args.saved_model and os.path.exists(args.saved_model):
+        # Old format: single .pth file with all parameters (backward compatibility)
+        print(f"Loading model from old format: {args.saved_model}")
+        model.load_state_dict(torch.load(args.saved_model), strict=False)
+        print("Saved model loaded (old format)")
+    else:
+        # New format: LoRA + non-LoRA parameters
+        # Use checkpoint_root and name to construct paths
+        lora_path = os.path.join(args.checkpoint_root, f"{args.name}_lora")
+        non_lora_path = os.path.join(args.checkpoint_root, f"{args.name}_non_lora.pth")
+
+        # Load LoRA adapters (model already has LoRA structure from get_peft_model)
+        if os.path.exists(lora_path):
+            # Load LoRA adapter weights
+            adapter_path = os.path.join(lora_path, "adapter_model.bin")
+            if os.path.exists(adapter_path):
+                lora_state = torch.load(adapter_path)
+                model.load_state_dict(lora_state, strict=False)
+                print(f"LoRA adapters loaded from {lora_path}")
+            else:
+                print(f"Warning: adapter_model.bin not found in {lora_path}")
+        else:
+            print(f"Warning: LoRA path not found: {lora_path}")
+
+        # Load non-LoRA trainable parameters
+        if os.path.exists(non_lora_path):
+            non_lora_state = torch.load(non_lora_path)
+            model.load_state_dict(non_lora_state, strict=False)
+            print(f"Non-LoRA parameters loaded from {non_lora_path}")
+            print(f"Loaded {len(non_lora_state)} trainable parameters")
+        else:
+            print(f"Warning: Non-LoRA path not found: {non_lora_path}")
 
 
     save_root = args.visualization_root
