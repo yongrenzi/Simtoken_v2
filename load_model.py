@@ -230,7 +230,7 @@ if __name__ == "__main__":
 
 
     val_dataloader_s = DataLoader(val_dataset_s, batch_size=1, shuffle=False, num_workers=4, collate_fn=partial(collate_fn, tokenizer=tokenizer))
-    # val_dataloader_u = DataLoader(val_dataset_u, batch_size=1, shuffle=False, num_workers=4, collate_fn=partial(collate_fn, tokenizer=tokenizer))
+    # val_dataloader_u = DataLoader(val_dataset_u, batch_size=4, shuffle=False, num_workers=4, collate_fn=partial(collate_fn, tokenizer=tokenizer))
     # val_dataloader_n = DataLoader(val_dataset_n, batch_size=2, shuffle=False, num_workers=4, collate_fn=partial(collate_fn, tokenizer=tokenizer))
 
 
@@ -265,8 +265,8 @@ if __name__ == "__main__":
 
     model.get_model().initialize_vision_modules(model.get_model().config)
     vision_tower = model.get_model().get_vision_tower()
-    vision_tower.to(dtype=torch.float32, device="cuda")
-
+    # vision_tower.to(dtype=torch.float32, device="cuda")
+    vision_tower.to(dtype=torch.bfloat16, device="cuda")
     model_args_from_pt = AutoConfig.from_pretrained(args.mllm)
     model_args_from_pt.use_cluster = True
     model_args_from_pt.freeze = False
@@ -521,5 +521,5 @@ if __name__ == "__main__":
 
     # valuate(model, val_dataloader_u, 'test_unseen')
     #
-    # valuate_Null(model, val_dataloader_u)
+    # valuate_Null(model, val_dataloader_n)
 

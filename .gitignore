@@ -4,3 +4,5 @@ checkpoints/*
 log/*
 *.pyc
 __pycache__/
+pretrained_model/*
+**/__pycache__/*

@@ -30,7 +30,6 @@
 #     return x
 
 
-
 # device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 # print(f"Using device: {device}")
 
@@ -110,6 +109,9 @@ from configs import args
 # --- 核心修改 1：不再从会报错的文件里 import data_dir ---
 # from save_audio_feats import data_dir 
 
+# --- 核心修改 1：不再从会报错的文件里 import data_dir ---
+# from save_audio_feats import data_dir
+
 def preprocess(x: torch.Tensor, device='cuda') -> torch.Tensor:
     """Normalize pixel values and pad to a square input."""
     x = x.to(device)
@@ -122,6 +124,7 @@ def preprocess(x: torch.Tensor, device='cuda') -> torch.Tensor:
     padw = img_size - w
     x = F.pad(x, (0, padw, 0, padh))
     return x
+
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"Using device: {device}")
@@ -148,6 +151,7 @@ torch.cuda.empty_cache()
 # --- 核心修改 2：加入进度条 ---
 for vid in tqdm(vids, desc="Processing SAM features"):
     
+
     # --- 核心修改 3：断点续传逻辑 ---
     save_path = os.path.join(save_dir, f'{vid}.pt')
     if os.path.exists(save_path):

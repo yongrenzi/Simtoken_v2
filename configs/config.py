@@ -31,9 +31,9 @@ parser = argparse.ArgumentParser(
 
 
 
-parser.add_argument("--vision_pretrained",type=str,default='/public/home/zm_students/code/lyj/TGS-Agent-main/pretrained_weights/sam_vit_h_4b8939.pth')
-parser.add_argument("--vision_tower",type=str,default='/public/home/zm_students/code/lyj/TGS-Agent-main/pretrained_weights/clip-vit-large-patch14')
-parser.add_argument("--mllm",type=str,default='/public/home/zm_students/code/lyj/SimToken-main/Chat-UniVi-7B-v1.5')
+parser.add_argument("--vision_pretrained",type=str,default='/media/hanyidong/HHD_14T/code/lyj/Simtoken_v2/pretrained_model/sam_vit_h_4b8939.pth')
+parser.add_argument("--vision_tower",type=str,default='/media/hanyidong/HHD_14T/code/Happypk/Crab/pretrained_model/clip-vit-large-patch14')
+parser.add_argument("--mllm",type=str,default='/media/hanyidong/HHD_14T/code/lyj/Simtoken_v2/pretrained_model/Chat-UniVi-7B-v1.5')
 
 parser.add_argument("--conv_template",type=int,default=1)
 parser.add_argument("--ct_weight",type=float,default=0.1)
@@ -47,11 +47,11 @@ parser.add_argument("--resume", action='store_true', default=False, help="Resume
 parser.add_argument("--resume_from", type=str, default=None, help="Path to checkpoint directory (without _lora/_non_lora suffix)")
 
 # parser.add_argument("--name",type=str,default='testrun_5epoch_modify2') # simtoken1
-parser.add_argument("--name",type=str,default='testrun_2epoch_modify2')   # simtoken2
+parser.add_argument("--name",type=str,default='testrun_5epoch_modify2_origin_final')   # simtoken2
 # path to ref-avs dataset
-parser.add_argument("--data_dir",type=str,default='/public/home/zm_students/code/lyj/REFAVS',help=f"The data paranet dir. File arch should be: {file_arch}")
+parser.add_argument("--data_dir",type=str,default='/media/hanyidong/HHD_14T/code/Happypk/Crab/REFAVS',help=f"The data paranet dir. File arch should be: {file_arch}")
 # path to pretrained checkpoints
-parser.add_argument("--saved_model",type=str,default='/public/home/zm_students/code/lyj/SimToken-main_v2/result_ckpt/trained_simtoken.pth', help="the pretrained simtoken pth")
+parser.add_argument("--saved_model",type=str,default=None, help="the pretrained simtoken pth")
 
 
 parser.add_argument("--log_root",type=str,default='log', help="where to save log during training")

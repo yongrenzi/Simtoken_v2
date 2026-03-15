@@ -1,5 +1,5 @@
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "3"
 import transformers
 from datasets import REFAVS
 from configs import args
@@ -269,7 +269,9 @@ if __name__ == "__main__":
         "start": args.start,
     }
 
-    model = Simtoken_ForCausalLM.from_pretrained(args.mllm, torch_dtype=torch.float32, low_cpu_mem_usage=True, **model_args)
+    # model = Simtoken_ForCausalLM.from_pretrained(args.mllm, torch_dtype=torch.float32, low_cpu_mem_usage=True, **model_args)
+    model = Simtoken_ForCausalLM.from_pretrained(args.mllm, torch_dtype=torch.bfloat16, low_cpu_mem_usage=True,
+                                                 **model_args)
     print("\nmodel loaded")
 
     model.config.eos_token_id = tokenizer.eos_token_id
@@ -281,7 +283,8 @@ if __name__ == "__main__":
 
     model.get_model().initialize_vision_modules(model.get_model().config)
     vision_tower = model.get_model().get_vision_tower()
-    vision_tower.to(dtype=torch.float32, device="cuda")
+    # vision_tower.to(dtype=torch.float32, device="cuda")
+    vision_tower.to(dtype=torch.bfloat16, device="cuda")
 
     model_args_from_pt = AutoConfig.from_pretrained(args.mllm)
     model_args_from_pt.use_cluster = True
@@ -356,6 +359,8 @@ if __name__ == "__main__":
         model.print_trainable_parameters()
 
     model = model.to("cuda")
+    # Convert entire model to bfloat16 (including LoRA adapters)
+    model = model.to(torch.bfloat16)
     model.resize_token_embeddings(len(tokenizer))
 
 
