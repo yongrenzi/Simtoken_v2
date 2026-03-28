@@ -26,7 +26,7 @@ def dice_loss(
         inputs: torch.Tensor,
         targets: torch.Tensor,
         num_masks: float,
-        scale: float = 1000,
+        scale: float = 1.0,  # 修改：从1000改为1.0，避免数值不稳定
         eps: float = 1e-6,
 ):
     """
@@ -163,37 +163,37 @@ class Simtoken_Model(Simtoken_MetaModel, ChatUniViLlamaModel):
         self.config.mm_use_im_patch_token = False
 
 
-class SemanticMemoryBank:
-    def __init__(self, max_per_object=5):
-        self.bank = defaultdict(lambda: defaultdict(list))  # bank[vid][fid] = [feat1, feat2, ...]
-        self.max_per_object = max_per_object
+# class SemanticMemoryBank:
+#     def __init__(self, max_per_object=5):
+#         self.bank = defaultdict(lambda: defaultdict(list))  # bank[vid][fid] = [feat1, feat2, ...]
+#         self.max_per_object = max_per_object
 
-    def add(self, vid: str, fid: int, feat: torch.Tensor):
-        feat = feat.detach().cpu()
-        self.bank[vid][fid].append(feat)
-        if len(self.bank[vid][fid]) > self.max_per_object:
-            self.bank[vid][fid] = self.bank[vid][fid][-self.max_per_object:]  # 保留最新的 K 个
+#     def add(self, vid: str, fid: int, feat: torch.Tensor):
+#         feat = feat.detach().cpu()
+#         self.bank[vid][fid].append(feat)
+#         if len(self.bank[vid][fid]) > self.max_per_object:
+#             self.bank[vid][fid] = self.bank[vid][fid][-self.max_per_object:]  # 保留最新的 K 个
 
-    def add_batch(self, vids: list, fids: list, feats: torch.Tensor):
-        for vid, fid, feat in zip(vids, fids, feats):
-            self.add(vid, int(fid), feat)
+#     def add_batch(self, vids: list, fids: list, feats: torch.Tensor):
+#         for vid, fid, feat in zip(vids, fids, feats):
+#             self.add(vid, int(fid), feat)
 
-    def get_positive_features(self, vids: list, fids: list):
-        results = []
-        for vid, fid in zip(vids, fids):
-            pos = self.bank[vid][int(fid)].copy()  # List[Tensor]
-            results.append(pos)
-        return results
+#     def get_positive_features(self, vids: list, fids: list):
+#         results = []
+#         for vid, fid in zip(vids, fids):
+#             pos = self.bank[vid][int(fid)].copy()  # List[Tensor]
+#             results.append(pos)
+#         return results
 
-    def get_negative_features_same_vid(self, vids: list, fids: list):
-        results = []
-        for vid, fid in zip(vids, fids):
-            neg = []
-            for other_fid, feats in self.bank[vid].items():
-                if other_fid != int(fid):
-                    neg.extend(feats)
-            results.append(neg)
-        return results
+#     def get_negative_features_same_vid(self, vids: list, fids: list):
+#         results = []
+#         for vid, fid in zip(vids, fids):
+#             neg = []
+#             for other_fid, feats in self.bank[vid].items():
+#                 if other_fid != int(fid):
+#                     neg.extend(feats)
+#             results.append(neg)
+#         return results
 
 
 class Simtoken_ForCausalLM(ChatUniViLlamaForCausalLM):
@@ -229,12 +229,54 @@ class Simtoken_ForCausalLM(ChatUniViLlamaForCausalLM):
 
         self.audio_feature_layer = nn.Linear(in_features=128, out_features=4096)
 
-        self.memory = SemanticMemoryBank()
+        # ========== 音视频跨模态注意力模块 (方案B: SAM特征增强) ==========
+        from ChatUniVi.model.audio_visual_attention import AudioVisualCrossAttention
+
+        self.use_av_attention = kwargs.pop("use_av_attention", True)
+
+        if self.use_av_attention:
+            self.av_attention = AudioVisualCrossAttention(
+                audio_dim=128,      # VGGish 维度
+                visual_dim=256,     # SAM 特征维度
+                hidden_dim=256,     # 隐藏层维度
+                num_heads=8,        # 注意力头数
+                dropout=0.0         # 修改：禁用dropout避免训练初期数值不稳定
+            )
+            # 手动初始化av_attention模块的参数
+            self.av_attention.apply(self._init_av_attention_weights)
+
+            # 确保模块在正确的设备上
+            if hasattr(self, 'device'):
+                self.av_attention = self.av_attention.to(self.device)
+            print("[INFO] 音视频跨模态注意力模块已启用 (SAM特征增强, 混合精度)")
+        else:
+            self.av_attention = None
+            print("[INFO] 音视频跨模态注意力模块未启用")
+        # ================================================================
+
+        # self.memory = SemanticMemoryBank()
 
         self.compress = kwargs.pop("compress", True)
 
         self.start = kwargs.pop("start")
 
+
+    def _init_av_attention_weights(self, module):
+        """初始化音视频注意力模块的权重"""
+        if isinstance(module, nn.Linear):
+            # 使用更小的初始化范围，避免数值爆炸
+            nn.init.xavier_uniform_(module.weight, gain=0.01)
+            if module.bias is not None:
+                nn.init.constant_(module.bias, 0.0)
+        elif isinstance(module, nn.LayerNorm):
+            # LayerNorm的标准初始化
+            nn.init.constant_(module.weight, 1.0)
+            nn.init.constant_(module.bias, 0.0)
+        elif isinstance(module, nn.Conv2d):
+            # Conv2d使用小的初始化
+            nn.init.xavier_uniform_(module.weight, gain=0.01)
+            if module.bias is not None:
+                nn.init.constant_(module.bias, 0.0)
 
 
 
@@ -275,26 +317,93 @@ class Simtoken_ForCausalLM(ChatUniViLlamaForCausalLM):
             **kwargs,
     ):
         batch_size = len(images)
+
+        # Convert inputs to model dtype (bfloat16)
+        # Convert image_features to model dtype
+        image_features = [f.to(self.dtype) if hasattr(self, 'dtype') else f.to(torch.bfloat16) for f in image_features]
         image_embeddings = torch.cat(image_features, dim=0)
+
+        # Convert images_clip to model dtype
+        images_clip = [img.to(self.dtype) if hasattr(self, 'dtype') else img.to(torch.bfloat16) for img in images_clip]
+
         # image_embeddings = self.get_visual_embs(torch.cat(images, dim=0)) # [BT, 256, 64, 64]
+
+        # Convert audio_features to model dtype (bfloat16)
+        audio_features = [f.to(self.audio_feature_layer.weight.dtype) for f in audio_features]
+
         # 核心逻辑：如果是 20 帧就重塑为 [10, 2, 128] 取平均，否则保持原样
         processed_audio = [
-            f.view(10, 2, -1).mean(dim=1) if f.shape[0] == 20 else f 
+            f.view(10, 2, -1).mean(dim=1) if f.shape[0] == 20 else f
             for f in audio_features
         ]
-        audio_embeddings = self.audio_feature_layer(torch.stack(processed_audio, dim=0))
-        # audio_embeddings = self.audio_feature_layer(torch.stack(audio_features, dim=0))  # [B, 10, 4096]
-        # audio_embeddings = torch.cat(audio_features, dim=0) # [B*10, 128]
-        # audio_embeddings = audio_features  # [B, 10, 128]
+        # 在 avs_model.py:338 之前添加
+        for i, f in enumerate(processed_audio):
+            if torch.isnan(f).any() or torch.isinf(f).any():
+                print(f"[ERROR] Audio feature {i} contains NaN/Inf!")
+                processed_audio[i] = torch.nan_to_num(f, nan=0.0, posinf=1e6, neginf=-1e6)
 
+            # 检查数值范围
+            if f.abs().max() > 1e3:
+                print(f"[WARNING] Audio feature {i} has large values: max={f.abs().max()}")
+                processed_audio[i] = torch.clamp(f, min=-100, max=100)
         # train
         if not inference:
             target_frame = random.randint(0, 9)
             target_frame = 5
-
         else:
             target_frame = 5
-        # print("target_frame", target_frame)
+
+        # ========== 音视频跨模态注意力 (方案B: 增强SAM特征) ==========
+        if self.use_av_attention and self.av_attention is not None:
+            # 准备音频特征: list[B] of [10, 128] -> [B, 10, 128]
+            audio_feat_for_attention = torch.stack(processed_audio, dim=0)  # [B, 10, 128]
+
+            # ===== 调试：检查输入 =====
+            # print(f"\n[DEBUG] Before AV Attention (avs_model.py):")
+            # print(f"  audio_feat_for_attention: dtype={audio_feat_for_attention.dtype}, shape={audio_feat_for_attention.shape}")
+            # print(f"  audio_feat_for_attention: min={audio_feat_for_attention.min():.6f}, max={audio_feat_for_attention.max():.6f}, mean={audio_feat_for_attention.mean():.6f}")
+            # print(f"  image_embeddings: dtype={image_embeddings.dtype}, shape={image_embeddings.shape}")
+            # print(f"  image_embeddings: min={image_embeddings.min():.6f}, max={image_embeddings.max():.6f}, mean={image_embeddings.mean():.6f}")
+
+            # 检查输入是否有nan
+            if torch.isnan(audio_feat_for_attention).any():
+                print(f"[WARNING] audio_feat contains NaN before AV attention!")
+                audio_feat_for_attention = torch.nan_to_num(audio_feat_for_attention, nan=0.0)
+
+            if torch.isnan(image_embeddings).any():
+                print(f"[WARNING] image_embeddings contains NaN before AV attention!")
+                image_embeddings = torch.nan_to_num(image_embeddings, nan=0.0)
+
+            # 应用音视频注意力增强 SAM 特征
+            enhanced_sam_features, attention_map = self.av_attention(
+                audio_feat=audio_feat_for_attention,  # [B, 10, 128]
+                visual_feat=image_embeddings,          # [B*10, 256, 64, 64]
+                target_frame=target_frame
+            )
+
+            # # ===== 调试：检查输出 =====
+            # print(f"[DEBUG] After AV Attention (avs_model.py):")
+            # print(f"  enhanced_sam_features: dtype={enhanced_sam_features.dtype}, shape={enhanced_sam_features.shape}")
+            # print(f"  enhanced_sam_features: min={enhanced_sam_features.min():.6f}, max={enhanced_sam_features.max():.6f}, mean={enhanced_sam_features.mean():.6f}")
+            # print(f"  has_nan={torch.isnan(enhanced_sam_features).any()}\n")
+
+            # 检查输出是否有nan
+            if torch.isnan(enhanced_sam_features).any():
+                print(f"[WARNING] enhanced_sam_features contains NaN after AV attention!")
+                print(f"[WARNING] Replacing NaN values with 0 in enhanced_sam_features")
+                enhanced_sam_features = torch.nan_to_num(enhanced_sam_features, nan=0.0)
+
+            # 使用增强后的 SAM 特征
+            image_embeddings = enhanced_sam_features  # [B*10, 256, 64, 64]
+
+            # 可选：保存注意力图用于可视化（推理时）
+            if inference:
+                self.last_attention_map = attention_map  # [B, 64, 64]
+        # ================================================================
+
+        # 投影音频特征到 LLM 空间
+        audio_embeddings = self.audio_feature_layer(torch.stack(processed_audio, dim=0))
+        # audio_embeddings: [B, 10, 4096]
 
         input_ids, attention_masks, past_key_values, inputs_embeds, labels = super().prepare_inputs_labels_for_multimodal(
             input_ids, attention_masks, past_key_values=None, labels=labels, images=images_clip, audio_features=audio_embeddings, target_frame=target_frame, ref_ids=ref_ids
@@ -323,22 +432,23 @@ class Simtoken_ForCausalLM(ChatUniViLlamaForCausalLM):
         # print("seg_embeddings in this batch:", seg_embeddings.shape)
         # print("vids:", vids)
         # print("fids:", fids)
-        fis_flat = [fid[0] for fid in fids]
+
+        # fis_flat = [fid[0] for fid in fids]
         # print("fids:", fis_flat )
-        if not inference:
+        # if not inference:
 
-            pos_feats = self.memory.get_positive_features(vids, fis_flat )
-            neg_feats = self.memory.get_negative_features_same_vid(vids, fis_flat )
+        #     pos_feats = self.memory.get_positive_features(vids, fis_flat )
+        #     neg_feats = self.memory.get_negative_features_same_vid(vids, fis_flat )
 
-            for i in range(len(neg_feats)):
-                for j in range(len(seg_embeddings)):
-                    if j != i:
-                        neg_feats[i].append(seg_embeddings[j].detach().cpu())
+        #     for i in range(len(neg_feats)):
+        #         for j in range(len(seg_embeddings)):
+        #             if j != i:
+        #                 neg_feats[i].append(seg_embeddings[j].detach().cpu())
 
-            ct_loss = compute_alignment_loss(seg_embeddings, pos_feats, neg_feats)
+        #     ct_loss = compute_alignment_loss(seg_embeddings, pos_feats, neg_feats)
 
-            # print("ct loss:", ct_loss)
-            self.memory.add_batch(vids, fis_flat, seg_embeddings)
+        #     # print("ct loss:", ct_loss)
+        #     self.memory.add_batch(vids, fis_flat, seg_embeddings)
 
 
         pred_embeddings = []
@@ -425,7 +535,13 @@ class Simtoken_ForCausalLM(ChatUniViLlamaForCausalLM):
             gt_mask = gt_mask.view(a*b, c, d)  # [num_ref*T, H, W]
             pred_mask = pred_mask.view(a*b, c, d)  # [num_ref*T, H, W]
 
-            # print("gt_mask:", gt_mask.shape)
+            # 检查是否有nan
+            if torch.isnan(pred_mask).any():
+                print(f"\n[WARNING] Batch {batch_idx}: pred_mask contains NaN!")
+                print(f"  pred_mask shape: {pred_mask.shape}")
+                print(f"  gt_mask shape: {gt_mask.shape}")
+                # 将nan替换为0以避免训练中断
+                pred_mask = torch.nan_to_num(pred_mask, nan=0.0)
 
 
             mask_bce_loss += (
@@ -448,7 +564,8 @@ class Simtoken_ForCausalLM(ChatUniViLlamaForCausalLM):
 
 
         if epoch >= self.start:
-            loss = ce_loss + mask_loss + ct_weight * ct_loss
+            # loss = ce_loss + mask_loss + ct_weight * ct_loss
+            loss = ce_loss + mask_loss
         else:
             loss = ce_loss + mask_loss
 
@@ -458,7 +575,7 @@ class Simtoken_ForCausalLM(ChatUniViLlamaForCausalLM):
             "mask_bce_loss": mask_bce_loss,
             "mask_dice_loss": mask_dice_loss,
             "mask_loss": mask_loss,
-            "ct_loss": ct_loss,
+            # "ct_loss": ct_loss,
             "pred_masks": pred_masks,
             "gt_masks": gt_masks,
         }

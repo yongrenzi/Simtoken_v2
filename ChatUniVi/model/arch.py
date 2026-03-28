@@ -112,6 +112,7 @@ class ChatUniViMetaForCausalLM(ABC):
 
     def project(self, image_features, input_type="image"):
         if self.get_model().use_cluster:
+            # print("use_cluster")
             if input_type == "image":
                 cluster_image_features = []
                 token_dict = {'x': image_features,
@@ -211,6 +212,7 @@ class ChatUniViMetaForCausalLM(ABC):
                 image_features = image_features.to(self.get_model().mm_projector.weight.dtype)
 
         else:
+            # print("unuse_cluster")
             if input_type == "video":
                 image_features, cls_features = torch.mean(image_features, dim=0, keepdim=False).unsqueeze(
                     0), torch.mean(image_features, dim=1, keepdim=False).unsqueeze(0)
@@ -218,14 +220,22 @@ class ChatUniViMetaForCausalLM(ABC):
 
         image_features = self.get_model().mm_projector(image_features)
         return image_features # 不同的type形状相同
-
+        
+    # input_ids：torch.Size([4, 106])
+    # attention_mask: torch.Size([4, 106])
+    # past_key_values: None 
+    # labels: torch.Size([4, 106])
+    # len(images)=4 , images[0].shape: torch.Size([10, 3, 224, 224])
+    # audio_features: torch.Size([4, 10, 4096])
+    # target_frame: 5
+    # len(ref_ids): 4 ,ref_ids[0].shape: torch.Size([11])
     def prepare_inputs_labels_for_multimodal(
         self, input_ids, attention_mask, past_key_values, labels, images, audio_features=None, target_frame=0, ref_ids=None
     ):
         IMAGE_TOKEN_INDEX = -200
         AUDIO_TOKEN_INDEX = -300
         # print("\n调用prepare_inputs_labels_for_multimodal")
-        vision_tower = self.get_vision_tower()
+        vision_tower = self.get_vision_tower()  # CLIP
         # print("获取vision_tower")
         num_frames = images[0].shape[0]  # T
 

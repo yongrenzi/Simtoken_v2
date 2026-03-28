@@ -81,8 +81,8 @@ class REFAVS(Dataset):
         if cfg.conv_template == 0:
             self.system = "\nReference Video: <video> \nTarget Image: <image> \n"
         elif cfg.conv_template == 1:
-            self.system = "\nReference Video: <video> \nReference Audio: <audio> \nTarget Image: <image> \n"
-
+            # self.system = "\nReference Video: <video> \nReference Audio: <audio> \nTarget Image: <image> \n"
+            self.system = "\nReference Audio: <audio> \nTarget Image: <image> \n"
 
         self.question = "What is {sent} in the Reference Video? Please respond with segmentation mask in the Target Image."
 
