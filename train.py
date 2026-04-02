@@ -284,14 +284,14 @@ if __name__ == "__main__":
     # vision_tower.to(dtype=torch.float32, device="cuda")
     vision_tower.to(dtype=torch.bfloat16, device="cuda")
     model_args_from_pt = AutoConfig.from_pretrained(args.mllm)
-    model_args_from_pt.use_cluster = False
+    model_args_from_pt.use_cluster = True
     model_args_from_pt.freeze = False
     model_args_from_pt.mm_tune = True
     model_args_from_pt.spatial_cluster_rate0 = 64
     model_args_from_pt.spatial_cluster_rate1 = 32
     model_args_from_pt.spatial_cluster_rate2 = 16
     model_args_from_pt.temporal_cluster_rate = 0.0625
-    model_args_from_pt.use_cluster = False
+    model_args_from_pt.use_cluster = True
     model_args_from_pt.vision_tune = False
     model.get_model().initialize_cluster_modules(model_args_from_pt)
 
@@ -428,21 +428,34 @@ if __name__ == "__main__":
     # ===== Helper Functions for Checkpoint Management =====
     def save_checkpoint(epoch, model, optimizer, scheduler, save_path):
         """Save complete checkpoint including model, optimizer, and scheduler states"""
-        # 1. Save LoRA adapters
+        # 1. Save LoRA adapters (备份, 方便后续 merge)
         lora_path = f"{save_path}_epoch{epoch}_lora"
         model.save_pretrained(lora_path)
 
-        # 2. Save non-LoRA trainable parameters
-        trainable_param_names = {n for n, p in model.named_parameters() if p.requires_grad}
-        non_lora_trainable = {
-            k: v for k, v in model.state_dict().items()
-            if k in trainable_param_names and 'lora' not in k.lower()
-        }
+        # 2. 收集所有可训练参数 (LoRA + 非LoRA), 直接从 state_dict 匹配
+        full_state = model.state_dict()
+        param_names_grad = {n for n, p in model.named_parameters() if p.requires_grad}
+
+        # state_dict 的 key 可能与 named_parameters 的 key 不完全一致
+        # 同时用两种方式匹配, 确保不遗漏
+        trainable_state = {}
+        for k, v in full_state.items():
+            if k in param_names_grad:
+                trainable_state[k] = v.cpu()
+            else:
+                # 检查去掉常见前缀后是否匹配 (peft 包装可能加前缀)
+                for pn in param_names_grad:
+                    if k.endswith(pn) or pn.endswith(k):
+                        trainable_state[k] = v.cpu()
+                        break
+
+        print(f"  Trainable params to save: {len(trainable_state)} "
+              f"(from {len(param_names_grad)} requires_grad params)")
 
         # 3. Save complete checkpoint with training state
         checkpoint = {
             'epoch': epoch,
-            'non_lora_state_dict': non_lora_trainable,
+            'trainable_state_dict': trainable_state,
             'optimizer_state_dict': optimizer.state_dict(),
             'scheduler_state_dict': scheduler.state_dict(),
         }
@@ -451,9 +464,10 @@ if __name__ == "__main__":
         torch.save(checkpoint, checkpoint_path)
 
         print(f"Checkpoint saved: epoch {epoch}")
-        print(f"  - LoRA: {lora_path}")
+        print(f"  - LoRA backup: {lora_path}")
         print(f"  - Checkpoint: {checkpoint_path}")
         return lora_path, checkpoint_path
+
 
     def load_checkpoint(model, optimizer, scheduler, resume_from):
         """Load checkpoint and resume training state"""
@@ -474,34 +488,64 @@ if __name__ == "__main__":
             return 0
 
         print(f"Loading checkpoint from: {checkpoint_path}")
-        checkpoint = torch.load(checkpoint_path, map_location='cpu')
+        checkpoint = torch.load(checkpoint_path, map_location='cuda')
 
         # Extract epoch number from checkpoint
         start_epoch = checkpoint['epoch'] + 1
 
-        # Load non-LoRA parameters
-        model.load_state_dict(checkpoint['non_lora_state_dict'], strict=False)
-        print(f"Loaded non-LoRA parameters")
+        # 兼容旧格式 (non_lora_state_dict) 和新格式 (trainable_state_dict)
+        if 'trainable_state_dict' in checkpoint:
+            saved_state = checkpoint['trainable_state_dict']
+        elif 'non_lora_state_dict' in checkpoint:
+            saved_state = checkpoint['non_lora_state_dict']
+            print("[WARN] Using legacy checkpoint format (non_lora_state_dict), LoRA weights may not be included")
+        else:
+            print("[ERROR] Checkpoint has no recognized state_dict key")
+            return 0
 
-        # Load LoRA adapters
-        # Extract base path and epoch from checkpoint path
-        base_path = checkpoint_path.replace('_checkpoint.pth', '')
-        lora_path = f"{base_path}_lora"
+        # 加载可训练参数, 并验证实际匹配了多少 key
+        model_state = model.state_dict()
+        loaded_keys = []
+        missing_keys = []
+        for k, v in saved_state.items():
+            if k in model_state:
+                if model_state[k].shape == v.shape:
+                    model_state[k] = v
+                    loaded_keys.append(k)
+                else:
+                    print(f"  [WARN] Shape mismatch for {k}: "
+                          f"model={model_state[k].shape}, ckpt={v.shape}, skipped")
+                    missing_keys.append(k)
+            else:
+                missing_keys.append(k)
 
-        if os.path.exists(lora_path):
-            adapter_model_path = os.path.join(lora_path, "adapter_model.bin")
-            if os.path.exists(adapter_model_path):
-                lora_state = torch.load(adapter_model_path, map_location='cpu')
-                model.load_state_dict(lora_state, strict=False)
-                print(f"Loaded LoRA adapters from {lora_path}")
+        model.load_state_dict(model_state, strict=False)
+        print(f"  Loaded {len(loaded_keys)}/{len(saved_state)} trainable params")
+        if missing_keys:
+            print(f"  [WARN] {len(missing_keys)} keys in checkpoint not found in model:")
+            for mk in missing_keys[:10]:
+                print(f"    - {mk}")
+            if len(missing_keys) > 10:
+                print(f"    ... and {len(missing_keys) - 10} more")
 
-        # Load optimizer state
+        # 检查模型中 requires_grad 但未被恢复的参数
+        restored_set = set(loaded_keys)
+        not_restored = [n for n, p in model.named_parameters()
+                        if p.requires_grad and n not in restored_set]
+        if not_restored:
+            print(f"  [WARN] {len(not_restored)} trainable params NOT restored from checkpoint:")
+            for nr in not_restored[:10]:
+                print(f"    - {nr}")
+            if len(not_restored) > 10:
+                print(f"    ... and {len(not_restored) - 10} more")
+
+        # Load optimizer state (已在 cuda 上, 无 device mismatch)
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        print(f"Loaded optimizer state")
+        print(f"  Loaded optimizer state")
 
         # Load scheduler state
         scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-        print(f"Loaded scheduler state")
+        print(f"  Loaded scheduler state")
 
         print(f"Resuming from epoch {start_epoch}")
         return start_epoch

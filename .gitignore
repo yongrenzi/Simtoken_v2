@@ -5,3 +5,7 @@ log/*
 *.pyc
 __pycache__/
 pretrained_model/*
+.idea/
+*.md
+*.txt
+*.pdf
